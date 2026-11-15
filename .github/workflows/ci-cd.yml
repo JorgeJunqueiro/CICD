@@ -1,4 +1,4 @@
-name: Pipeline CI/CD
+name: Pipeline CI/CD Completo
 
 on:
   push:
@@ -10,8 +10,9 @@ permissions:
   id-token: write
 
 jobs:
-  # 1. INTEGRAÇÃO CONTÍNUA (CI)
-  testes:
+  # 1. BUILD
+  build:
+    name: 1. Build
     runs-on: ubuntu-latest
     steps:
       - name: Baixar código
@@ -22,25 +23,83 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Executar testes automatizados
-        run: node --test
+      - name: Validar sintaxe e empacotar para pasta dist/
+        run: |
+          node --check app.js
+          mkdir -p dist
+          cp index.html app.js dist/
+          echo "Build concluído! Ficheiros preparados para produção:"
+          ls -la dist/
 
-  # 2. DEPLOY CONTÍNUO (CD)
-  deploy:
-    needs: testes # Só avança se os testes passarem!
+      - name: Guardar artefacto do Build
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-build
+          path: dist/
+
+  # 2. INTEGRATION TESTS
+  integration-tests:
+    name: 2. Integration Tests
+    needs: build
     runs-on: ubuntu-latest
+    steps:
+      - name: Baixar código (para obter os testes)
+        uses: actions/checkout@v4
+
+      - name: Baixar artefacto gerado no Build
+        uses: actions/download-artifact@v4
+        with:
+          name: site-build
+          path: dist
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Executar testes sobre o Build
+        run: |
+          cp app.test.js dist/
+          cd dist
+          node --test
+
+  # 3. DEPLOY
+  deploy:
+    name: 3. Deploy
+    needs: integration-tests
+    runs-on: ubuntu-latest
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Baixar código
-        uses: actions/checkout@v4
+      - name: Baixar artefacto validado
+        uses: actions/download-artifact@v4
+        with:
+          name: site-build
+          path: dist
 
-      - name: Preparar ficheiros
+      - name: Preparar artefacto para o GitHub Pages
         uses: actions/upload-pages-artifact@v3
         with:
-          path: '.'
+          path: dist
 
-      - name: Publicar no GitHub Pages
+      - name: Publicar em Produção
         id: deployment
         uses: actions/deploy-pages@v4
+
+  # 4. SMOKE TESTS
+  smoke-tests:
+    name: 4. Smoke Tests
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verificar se o site em produção está online e funcional
+        run: |
+          URL="${{ needs.deploy.outputs.page_url }}"
+          echo "A testar o site publicado em: $URL"
+          sleep 5
+          curl --retry 5 --retry-delay 3 -fsSL "$URL" | grep -q 'id="resultado"'
+          curl --retry 5 --retry-delay 3 -fsSL "${URL%/}/app.js" | grep -q 'somar'
+          echo "✅ Smoke tests passaram! Produção está no ar (HTTP 200) e a responder corretamente."
